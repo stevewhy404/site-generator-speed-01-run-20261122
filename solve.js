@@ -12,19 +12,25 @@ const byCodeUnits = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 /* ------------------------------------------------------------------ text */
 
 // HTML escape table: & < > " ' (and nothing else).
-const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+const NEEDS_ESCAPE = /[&<>"']/;
 
 export function escapeHtml(text) {
+  if (!NEEDS_ESCAPE.test(text)) return text;
   let out = '';
   let last = 0;
   for (let i = 0; i < text.length; i++) {
-    const rep = ESC[text[i]];
-    if (rep !== undefined) {
-      out += text.slice(last, i) + rep;
-      last = i + 1;
-    }
+    const c = text.charCodeAt(i);
+    let rep;
+    if (c === 38) rep = '&amp;';
+    else if (c === 60) rep = '&lt;';
+    else if (c === 62) rep = '&gt;';
+    else if (c === 34) rep = '&quot;';
+    else if (c === 39) rep = '&#39;';
+    else continue;
+    out += text.slice(last, i) + rep;
+    last = i + 1;
   }
-  return last === 0 ? text : out + text.slice(last);
+  return out + text.slice(last);
 }
 
 const SLUG_MAX = 64;
@@ -149,19 +155,28 @@ function valueOf(key, raw) {
 }
 
 function parseFrontMatter(text) {
-  const lines = text.split('\n');
-  if (lines[0] !== '---') return { error: 'no front matter' };
-  let close = -1;
-  for (let i = 1; i < lines.length; i++) {
-    if (lines[i] === '---') { close = i; break; }
+  // lines[0] is '---' exactly when the text is '---' or opens '---\n'.
+  if (text !== '---' && !text.startsWith('---\n')) return { error: 'no front matter' };
+  // The closing line is the first line that is exactly '---': a '\n---'
+  // followed by '\n' or the end. Scan for it without splitting the body.
+  let close = -1; // index of the '\n' before the closing '---' line
+  let from = 4;
+  while (true) {
+    const idx = text.indexOf('\n---', from);
+    if (idx === -1) break;
+    const after = idx + 4;
+    if (after === text.length || text[after] === '\n') { close = idx; break; }
+    from = idx + 1;
   }
   if (close === -1) return { error: 'the front matter is not closed' };
+  const region = text.slice(4, close);
+  const flines = region === '' ? [] : region.split('\n');
   const data = {};
-  for (let i = 1; i < close; i++) {
-    const line = lines[i];
+  for (let k = 0; k < flines.length; k++) {
+    const line = flines[k];
     if (BLANK_LINE.test(line) || line.startsWith('#')) continue;
     const m = LINE.exec(line);
-    if (!m) return { error: `line ${i + 1} is not "key: value"` };
+    if (!m) return { error: `line ${k + 2} is not "key: value"` };
     const key = m[1];
     const raw = (m[2] ?? '').replace(/[ \t]+$/, '');
     if (!KEYS.includes(key)) return { error: `unknown key "${key}"` };
@@ -172,7 +187,8 @@ function parseFrontMatter(text) {
     data[key] = v.value;
   }
   if (!Object.hasOwn(data, 'title')) return { error: 'no title' };
-  return { data, body: lines.slice(close + 1).join('\n') };
+  const afterClose = close + 4;
+  return { data, body: afterClose === text.length ? '' : text.slice(afterClose + 1) };
 }
 
 /* ---------------------------------------------------------------- Markdown */
@@ -241,12 +257,19 @@ function findSingleStar(s, from) {
   return -1;
 }
 
+const INLINE_SPECIAL = /[\\*\[`]/;
+
 /**
- * `s` rendered inline into `out` (an array of string pieces). Plain runs are
- * escaped in bulk; only `\\`, backtick spans, strong, emphasis and links
- * break a run. `env.link(target)` resolves a link's href.
+ * `s` rendered inline into `out` (an array of string pieces). Text with no
+ * inline marker is escaped in one pass; otherwise plain runs are escaped in
+ * bulk and only `\\`, backtick spans, strong, emphasis and links break a
+ * run. `env.link(target)` resolves a link's href.
  */
 function inlineInto(s, env, out) {
+  if (!INLINE_SPECIAL.test(s)) {
+    out.push(escapeHtml(s));
+    return;
+  }
   const n = s.length;
   let i = 0;
   let plain = 0;
@@ -327,7 +350,7 @@ function inline(s, env) {
 function renderMarkdown(src, env, slugCache) {
   const lines = src.split('\n');
   const ids = new Set();
-  const blocks = [];
+  const out = [];
   const toc = [];
   let excerpt = null;
   let i = 0;
@@ -353,13 +376,12 @@ function renderMarkdown(src, env, slugCache) {
         }
         i++;
         const cls = lang === '' ? '' : ` class="language-${escapeHtml(lang)}"`;
-        const parts = [`<pre><code${cls}>`];
+        out.push(`<pre><code${cls}>`);
         for (const l of body) {
-          parts.push(escapeHtml(l));
-          parts.push('\n');
+          out.push(escapeHtml(l));
+          out.push('\n');
         }
-        parts.push('</code></pre>\n');
-        blocks.push(parts.join(''));
+        out.push('</code></pre>\n');
         continue;
       }
     }
@@ -368,7 +390,7 @@ function renderMarkdown(src, env, slugCache) {
       if (heading !== null) {
         const id = uniqueSlug(slugify(heading.text, slugCache), ids);
         const html = inline(heading.text, env);
-        blocks.push(`<h${heading.depth} id="${id}">${html}</h${heading.depth}>\n`);
+        out.push(`<h${heading.depth} id="${id}">${html}</h${heading.depth}>\n`);
         if (heading.depth === 2 || heading.depth === 3) toc.push({ level: heading.depth, id, html });
         i++;
         continue;
@@ -376,7 +398,7 @@ function renderMarkdown(src, env, slugCache) {
     }
     if (c0 === 45 || c0 === 42) {
       if (HR.test(line)) {
-        blocks.push('<hr>\n');
+        out.push('<hr>\n');
         i++;
         continue;
       }
@@ -393,10 +415,13 @@ function renderMarkdown(src, env, slugCache) {
             i++;
           } else break;
         }
-        const parts = ['<ul>\n'];
-        for (const item of items) parts.push(`<li>${inline(item.join('\n'), env)}</li>\n`);
-        parts.push('</ul>\n');
-        blocks.push(parts.join(''));
+        out.push('<ul>\n');
+        for (const item of items) {
+          out.push('<li>');
+          inlineInto(item.join('\n'), env, out);
+          out.push('</li>\n');
+        }
+        out.push('</ul>\n');
         continue;
       }
     }
@@ -415,22 +440,30 @@ function renderMarkdown(src, env, slugCache) {
             i++;
           } else break;
         }
-        const open = start !== 1 ? `<ol start="${start}">` : '<ol>';
-        const parts = [`${open}\n`];
-        for (const item of items) parts.push(`<li>${inline(item.join('\n'), env)}</li>\n`);
-        parts.push('</ol>\n');
-        blocks.push(parts.join(''));
+        out.push(start !== 1 ? `<ol start="${start}">\n` : '<ol>\n');
+        for (const item of items) {
+          out.push('<li>');
+          inlineInto(item.join('\n'), env, out);
+          out.push('</li>\n');
+        }
+        out.push('</ol>\n');
         continue;
       }
     }
     if (c0 === 62) {
       const body = [];
       while (i < n && lines[i].startsWith('>')) {
-        body.push(lines[i].replace(/^> ?/, ''));
+        const l = lines[i];
+        body.push(l.charCodeAt(1) === 32 ? l.slice(2) : l.slice(1));
         i++;
       }
       const qlines = body.map(trimST).filter((l) => l !== '');
-      blocks.push(qlines.length === 0 ? '<blockquote>\n</blockquote>\n' : `<blockquote>\n<p>${inline(qlines.join('\n'), env)}</p>\n</blockquote>\n`);
+      if (qlines.length === 0) out.push('<blockquote>\n</blockquote>\n');
+      else {
+        out.push('<blockquote>\n<p>');
+        inlineInto(qlines.join('\n'), env, out);
+        out.push('</p>\n</blockquote>\n');
+      }
       continue;
     }
     // Paragraph: this line and the lines after it up to a blank line, a
@@ -438,11 +471,20 @@ function renderMarkdown(src, env, slugCache) {
     const body = [trimST(line)];
     i++;
     while (i < n && !endsParagraph(lines[i])) body.push(trimST(lines[i++]));
-    const html = inline(body.join('\n'), env);
-    if (excerpt === null) excerpt = html;
-    blocks.push(`<p>${html}</p>\n`);
+    const text = body.join('\n');
+    // The excerpt is the first paragraph's inline HTML: render it once and
+    // reuse the string for both the excerpt and the block.
+    if (excerpt === null) {
+      const html = inline(text, env);
+      excerpt = html;
+      out.push('<p>', html, '</p>\n');
+    } else {
+      out.push('<p>');
+      inlineInto(text, env, out);
+      out.push('</p>\n');
+    }
   }
-  return { html: blocks.join(''), toc, excerpt: excerpt ?? '' };
+  return { html: out.join(''), toc, excerpt: excerpt ?? '' };
 }
 
 /* ---------------------------------------------------------------- Templates */
@@ -609,8 +651,19 @@ const REPORT_FILE = 'build-report.txt';
 const RESERVED = ['posts', 'tags', 'page'];
 
 function wordsOf(text) {
-  const m = text.match(/\S+/g);
-  return m === null ? 0 : m.length;
+  // Runs of non-whitespace, counted without allocating the words array.
+  let n = 0;
+  let inWord = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c === 32 || c === 9 || c === 10 || c === 13 || c === 12 || c === 11) inWord = false;
+    else if (c > 127 && /\s/.test(text[i])) inWord = false;
+    else if (!inWord) {
+      inWord = true;
+      n++;
+    }
+  }
+  return n;
 }
 
 function resolvePath(dir, rel) {
@@ -660,7 +713,7 @@ export function run(input) {
   {
     const files = [...b.input.files].sort((x, y) => byCodeUnits(x.path, y.path));
     for (const f of files) {
-      if (f.path.endsWith('.md')) b.sources.push({ path: f.path, text: f.content.replace(/\r\n?/g, '\n') });
+      if (f.path.endsWith('.md')) b.sources.push({ path: f.path, text: f.content.includes('\r') ? f.content.replace(/\r\n?/g, '\n') : f.content });
       else b.statics.push({ path: f.path, content: f.content });
     }
   }
