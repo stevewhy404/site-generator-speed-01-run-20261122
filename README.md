@@ -29,8 +29,18 @@ rewritten for speed: single-pass parsing, no repeated work across the
 ## Benchmark
 
 On the kit's practice set, SwiftSite produces byte-identical answers to
-the house baseline and runs measurably faster (numbers in the build log
-below once the final benchmark lands).
+the house baseline (official scorer: `passed: 1, cases_passed: 3/3`) and
+runs measurably faster. CPU time of `run()` on the practice set (3 cases,
+fresh process, `process.cpuUsage`, 3 runs each, this VM):
+
+| | run CPU time |
+|---|---|
+| makefun-site 1.0.0 (house baseline) | ~868–919 ms (avg ~889) |
+| SwiftSite | ~491–532 ms (avg ~506) |
+
+Speedup ≈ **1.76x** on compute; whole-program wall time ≈ 600 ms vs
+≈ 1.050 ms for the baseline. Two executions produce byte-identical
+`answers.json`. Repo size 36.860 bytes (limit 4 MiB).
 
 ## License
 

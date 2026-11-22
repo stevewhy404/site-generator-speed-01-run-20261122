@@ -859,7 +859,9 @@ export function run(input) {
     const recent = b.posts.slice(0, b.input.site.recent).map((p) => b.cards.get(p));
     const ctx = { templates: b.templates, escape: escapeHtml };
     const pageOf = (s) => ({
-      ...cardOf(s),
+      // A post's card already sits in b.cards: reuse it instead of counting
+      // the body's words a second time. A page gets a fresh card.
+      ...(s.post ? b.cards.get(s) : cardOf(s)),
       slug: s.slug,
       content: s.html,
       toc: s.toc.map((h) => ({ level: h.level, id: h.id, html: h.html })),
